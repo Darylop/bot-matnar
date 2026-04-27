@@ -1,0 +1,12 @@
+dist/*
+node_modules
+.env
+.pnpm-store
+*_sessions
+*tokens
+.wwebjs*
+
+*.log
+*qr.png
+credentials/
+.env
