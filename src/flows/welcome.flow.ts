@@ -6,19 +6,23 @@ import { chatFlow } from './chat.flow'
 import { appointmentFlow } from './appointment.flow'
 
 export const welcomeFlow = addKeyword<Provider, Database>(EVENTS.WELCOME)
-    .addAction(async (ctx, { gotoFlow, flowDynamic }) => {
+    .addAction(async (ctx, { gotoFlow, state }) => {
+        let intent: 'chat' | 'appointment' = 'chat'
         try {
-            const intent = await classifyIntent(ctx.body)
-
-            if (intent === 'appointment') {
-                return gotoFlow(appointmentFlow)
-            }
-
-            return gotoFlow(chatFlow)
+            intent = await classifyIntent(ctx.body)
         } catch (error) {
-            console.error('[welcome] Error classifying intent:', error)
-            await flowDynamic(
-                'Hola, soy el asistente de Matnar. ¿En que te puedo ayudar hoy?'
-            )
+            // If classification keeps failing (e.g. Gemini 503 after retries),
+            // fall back to chat so the user still gets a contextual response.
+            console.error('[welcome] Error classifying intent, defaulting to chat:', error)
         }
+
+        if (intent === 'appointment') {
+            await state.update({
+                appointmentInitialMessage: ctx.body,
+                appointmentExtracted: false,
+            })
+            return gotoFlow(appointmentFlow)
+        }
+
+        return gotoFlow(chatFlow)
     })

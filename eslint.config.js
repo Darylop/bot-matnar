@@ -20,6 +20,8 @@ export default [
             '@typescript-eslint/no-unused-vars': 'off',
             '@typescript-eslint/ban-ts-comment': 'off',
             'no-unsafe-optional-chaining': 'off',
+            // Broken under ESLint 9 (uses removed context.getAncestors API).
+            'builderbot/func-prefix-endflow-flowdynamic': 'off',
         },
     },
 ]
