@@ -3,13 +3,23 @@ import { createBot, createProvider, createFlow } from '@builderbot/bot'
 import { MemoryDB as Database } from '@builderbot/bot'
 import { BaileysProvider as Provider } from '@builderbot/provider-baileys'
 import { welcomeFlow } from './flows/welcome.flow'
-import { chatFlow } from './flows/chat.flow'
+import { welcomeMenuFlow } from './flows/welcome-menu.flow'
+import { servicesFlow } from './flows/services.flow'
 import { appointmentFlow } from './flows/appointment.flow'
+import { cancelFlow } from './flows/cancel.flow'
+import { editFlow } from './flows/edit.flow'
 
 const PORT = process.env.PORT ?? 3008
 
 const main = async () => {
-    const adapterFlow = createFlow([welcomeFlow, chatFlow, appointmentFlow])
+    const adapterFlow = createFlow([
+        welcomeFlow,
+        welcomeMenuFlow,
+        servicesFlow,
+        appointmentFlow,
+        cancelFlow,
+        editFlow,
+    ])
 
     const adapterProvider = createProvider(Provider, {
         version: [2, 3000, 1035824857],

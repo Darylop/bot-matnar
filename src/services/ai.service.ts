@@ -12,23 +12,49 @@ const toChatTurns = (history: GeminiMessage[]): ChatTurn[] =>
         content: m.parts.map((p) => p.text).join(''),
     }))
 
-/**
- * Classifies user intent as 'chat' or 'appointment' using the configured LLM provider.
- */
-export async function classifyIntent(text: string): Promise<'chat' | 'appointment'> {
-    const prompt = `Clasifica la intencion del usuario en UNA sola palabra: "chat" o "appointment".
+export type Intent = 'welcome' | 'services' | 'appointment' | 'cancel' | 'edit' | 'unknown'
 
-Criterios:
-- "appointment": el usuario quiere agendar, programar o reservar una cita, llamada, reunion, o hablar con alguien del equipo de Matnar
-- "chat": todo lo demas (preguntas, saludos, solicitudes de informacion, curiosidades, etc.)
-- Importante: si solo pide informacion sobre servicios, catalogo, que ofrece Matnar, precios orientativos sin pedir cita, o dudas generales, eso es "chat", no "appointment".
+const ALLOWED_INTENTS: ReadonlyArray<Intent> = [
+    'welcome',
+    'services',
+    'appointment',
+    'cancel',
+    'edit',
+    'unknown',
+]
+
+/**
+ * Clasifica la intencion del usuario con IA (una etiqueta).
+ */
+export async function classifyIntent(text: string): Promise<Intent> {
+    const prompt = `Clasifica la intencion del usuario en UNA sola palabra de esta lista exacta:
+"welcome", "services", "appointment", "cancel", "edit", "unknown".
+
+EL BOT SOLO SIRVE PARA: informacion de Matnar/servicios, agendar reuniones, modificar o cancelar citas.
+
+- "welcome": saludos o inicio de conversacion SIN otra peticion concreta. Ejemplos: "hola", "hola!", "buenos dias", "que tal", "menu", "inicio".
+- "services": dudas, consultas o interes sobre los servicios de Matnar, el catalogo, precios orientativos, como trabajan, o que ofrecen. Ejemplos: "tengo dudas", "que servicios tienen", "quiero una pagina web", "cuanto cuesta", "me interesa e-commerce", "info sobre desarrollo web". NO uses "services" si pide agendar en el mismo mensaje.
+- "appointment": quiere AGENDAR, RESERVAR o CREAR una cita/llamada/reunion nueva. Ejemplos: "quiero agendar", "agendar cita", "reservar una llamada".
+- "cancel": quiere CANCELAR o ANULAR una cita ya existente. Ejemplos: "cancela mi cita", "borra la reunion".
+- "edit": quiere MODIFICAR, CAMBIAR o REPROGRAMAR una cita existente (fecha, hora, servicio). Ejemplos: "cambiar mi cita", "moverla al viernes".
+- "unknown": temas fuera de alcance (chistes, politica, clima, tareas escolares, codigo ajeno, identidad del bot/IA, cultura general).
+
+Reglas:
+- "hola quiero agendar" -> appointment
+- "hola" solo -> welcome
+- "tengo dudas" o "tengo una duda" -> services
+- Ante duda entre "services" y "unknown", elige "services" solo si menciona Matnar, servicios digitales o negocio; si no, "unknown".
 
 Mensaje del usuario: "${text}"
 
-Responde SOLO con la palabra "chat" o "appointment", sin puntuacion ni explicacion:`
+Responde SOLO con una palabra de la lista, en minusculas, sin puntuacion ni explicacion:`
 
     const raw = await getLLM().complete(prompt, { temperature: 0 })
-    return raw.trim().toLowerCase().includes('appointment') ? 'appointment' : 'chat'
+    const cleaned = raw.trim().toLowerCase().replace(/[^a-z]/g, '')
+    const exact = ALLOWED_INTENTS.find((label) => cleaned === label)
+    if (exact) return exact
+    const partial = ALLOWED_INTENTS.find((label) => cleaned.includes(label))
+    return partial ?? 'welcome'
 }
 
 /**

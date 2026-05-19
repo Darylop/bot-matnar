@@ -4,7 +4,7 @@
  *
  * Ejemplos aceptados (fecha): 15/01/2026, 15-1-26, 2026-01-15, 15 de enero 2026, hoy, mañana,
  *   lunes…viernes (proxima ocurrencia en el calendario: si ya paso ese dia en la semana, la de la semana siguiente).
- * Ejemplos aceptados (hora): 10:00, 10.30, 2:30 pm, 14h30 (opcional último).
+ * Ejemplos aceptados (hora): 10:00, 10.30, 2:30 pm, 14h30, "a las 14" dentro de una frase mas larga.
  */
 
 const DEFAULT_TIMEZONE = 'America/Bogota'
@@ -254,6 +254,45 @@ function to24From12(h12: number, isPm: boolean): number {
     return h12 === 12 ? 0 : h12
 }
 
+const formatHHmm = (h: number, m: number): string =>
+    `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+
+/**
+ * Convierte una hora interna en formato 24h ("HH:MM") al formato 12h amigable
+ * para el usuario ("9:00 am", "2:30 pm", "12:00 pm"). Si el input no es valido
+ * lo devuelve sin cambios para no romper mensajes ya construidos.
+ */
+export function formatTime12h(timeHHmm: string): string {
+    const t = timeHHmm.match(/^(\d{1,2}):(\d{2})$/)
+    if (!t) return timeHHmm
+    const h24 = Number(t[1])
+    const min = Number(t[2])
+    if (h24 < 0 || h24 > 23 || min < 0 || min > 59) return timeHHmm
+    const period = h24 >= 12 ? 'pm' : 'am'
+    const h12base = h24 % 12
+    const h12 = h12base === 0 ? 12 : h12base
+    return `${h12}:${String(min).padStart(2, '0')} ${period}`
+}
+
+/** Rango horario laboral formateado para mostrar al usuario (12h). */
+export const BUSINESS_HOURS_LABEL = '9 am a 6 pm'
+
+/**
+ * Cuando el usuario dice una hora sin am/pm explicito (p.ej. "a las 4"),
+ * y la lectura literal AM cae fuera del horario laboral pero la version PM
+ * cae dentro, asumimos PM. Asi "a las 4" -> 16:00, "a las 5" -> 17:00, etc.
+ *
+ * Solo se aplica a horas 1-12 sin marcador am/pm. No tocamos 0, 13-23 ni
+ * casos donde la AM ya es valida (9, 10, 11, 12).
+ */
+function resolveAmbiguousAmPm(h: number, m: number): { h: number; m: number } {
+    if (h < 1 || h > 12) return { h, m }
+    if (isWithinBusinessHours(formatHHmm(h, m))) return { h, m }
+    const pm = h === 12 ? 12 : h + 12
+    if (isWithinBusinessHours(formatHHmm(pm, m))) return { h: pm, m }
+    return { h, m }
+}
+
 /**
  * Devuelve HH:MM (24h, dos digitos en hora) o null.
  * Primero se interpretan sufijos am/pm para no confundir "9:00 pm" con las 09:00 en 24h.
@@ -287,21 +326,43 @@ export function normalizeAppointmentTime(raw: string): string | null {
     if (hLetter) {
         const res = parseHourMinute24(Number(hLetter[1]), Number(hLetter[2]))
         if (!res) return null
-        return `${String(res.h).padStart(2, '0')}:${String(res.m).padStart(2, '0')}`
+        const adj = resolveAmbiguousAmPm(res.h, res.m)
+        return formatHHmm(adj.h, adj.m)
     }
 
     const h24 = s.match(/^(\d{1,2})[h:](\d{2})$/)
     if (h24) {
         const res = parseHourMinute24(Number(h24[1]), Number(h24[2]))
         if (!res) return null
-        return `${String(res.h).padStart(2, '0')}:${String(res.m).padStart(2, '0')}`
+        const adj = resolveAmbiguousAmPm(res.h, res.m)
+        return formatHHmm(adj.h, adj.m)
     }
 
     const dotOrColon = s.match(/^(\d{1,2})[:.](\d{2})$/)
     if (dotOrColon) {
         const res = parseHourMinute24(Number(dotOrColon[1]), Number(dotOrColon[2]))
         if (!res) return null
+        const adj = resolveAmbiguousAmPm(res.h, res.m)
+        return formatHHmm(adj.h, adj.m)
+    }
+
+    // Hora embebida en una frase ("Desarrollo, a las 14, por parte de X")
+    const aLasAmPm = s.match(/\ba las (\d{1,2})\s*([ap])\.?m\.?\b/)
+    if (aLasAmPm) {
+        const h12 = Number(aLasAmPm[1])
+        const isPm = aLasAmPm[2] === 'p'
+        const hour = to24From12(h12, isPm)
+        const res = parseHourMinute24(hour, 0)
+        if (!res) return null
         return `${String(res.h).padStart(2, '0')}:${String(res.m).padStart(2, '0')}`
+    }
+
+    const aLas = s.match(/\ba las (\d{1,2})(?::(\d{2}))?\b/)
+    if (aLas) {
+        const res = parseHourMinute24(Number(aLas[1]), aLas[2] ? Number(aLas[2]) : 0)
+        if (!res) return null
+        const adj = resolveAmbiguousAmPm(res.h, res.m)
+        return formatHHmm(adj.h, adj.m)
     }
 
     return null
@@ -325,7 +386,11 @@ export function isBusinessWeekday(ddMmYyyy: string, timeZone?: string): boolean 
     return d !== null && d >= 1 && d <= 5
 }
 
-/** Inicio de cita a las HH:MM; la ventana de 30 min debe terminar a las 18:00 o antes. */
+/**
+ * Inicio de cita a las HH:MM. Horario laboral 09:00-18:00 inclusive como hora de inicio:
+ * la ventana de 30 min puede terminar como tarde a las 18:30, asi "a las 6 (= 18:00)"
+ * cuenta como dentro del horario.
+ */
 export function isWithinBusinessHours(timeHHmm: string): boolean {
     const t = timeHHmm.match(/^(\d{2}):(\d{2})$/)
     if (!t) return false
@@ -334,6 +399,60 @@ export function isWithinBusinessHours(timeHHmm: string): boolean {
     const start = h * 60 + min
     const end = start + 30
     const open = 9 * 60
-    const close = 18 * 60
+    const close = 18 * 60 + 30
     return start >= open && end <= close
+}
+
+const WEEKDAY_NAMES_ES = [
+    '',
+    'lunes',
+    'martes',
+    'miercoles',
+    'jueves',
+    'viernes',
+    'sabado',
+    'domingo',
+] as const
+
+/** Nombre del dia de la semana en español (ej. "viernes") para mensajes al usuario. */
+export function formatWeekdayFriendly(ddMmYyyy: string, timeZone?: string): string {
+    const iso = getIsoWeekdayInZone(ddMmYyyy, timeZone)
+    if (!iso) return ddMmYyyy
+    return WEEKDAY_NAMES_ES[iso] ?? ddMmYyyy
+}
+
+const SLOT_STEP_MINUTES = 30
+const BUSINESS_FIRST_SLOT = 9 * 60
+/** Ultima hora de inicio valida (18:00); despues pasa al siguiente dia habil. */
+const BUSINESS_LAST_SLOT_START = 18 * 60
+
+/**
+ * Avanza al siguiente hueco de 30 min dentro del horario laboral; si no cabe en el dia,
+ * salta al proximo dia habil a las 09:00.
+ */
+export function addBusinessSlotStep(
+    date: string,
+    time: string,
+    timeZone: string = getAppointmentTimeZone()
+): { date: string; time: string } {
+    const [h, m] = time.split(':').map(Number)
+    const nextMinutes = h * 60 + m + SLOT_STEP_MINUTES
+
+    if (nextMinutes <= BUSINESS_LAST_SLOT_START) {
+        const nh = Math.floor(nextMinutes / 60)
+        const nm = nextMinutes % 60
+        return { date, time: formatHHmm(nh, nm) }
+    }
+
+    const [day, month, year] = date.split('/').map(Number)
+    let cursor = addCalendarDays(year, month, day, 1, timeZone)
+    for (let i = 0; i < 14; i++) {
+        const candidate = ymdToDdMmYyyy(cursor.year, cursor.month, cursor.day)
+        if (isBusinessWeekday(candidate, timeZone)) {
+            return { date: candidate, time: '09:00' }
+        }
+        cursor = addCalendarDays(cursor.year, cursor.month, cursor.day, 1, timeZone)
+    }
+
+    return { date, time: '09:00' }
 }

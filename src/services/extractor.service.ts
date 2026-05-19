@@ -11,6 +11,7 @@ export type AppointmentFields = {
     service: string | null
     date: string | null  // DD/MM/YYYY
     time: string | null  // HH:MM 24h
+    email: string | null
 }
 
 type RawExtraction = {
@@ -18,10 +19,40 @@ type RawExtraction = {
     service: string | null
     date_phrase: string | null
     time_phrase: string | null
+    email: string | null
+}
+
+const EMAIL_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/
+
+export function extractEmail(raw: string): string | null {
+    const match = raw.match(EMAIL_REGEX)
+    return match ? match[0].toLowerCase() : null
 }
 
 const stripDiacritics = (s: string): string =>
     s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+
+/**
+ * Nombre cuando el usuario habla en representacion de una persona o empresa
+ * ("por parte de Servicios Esponja", "de parte de Ana Gomez").
+ */
+function extractNameFromRepresentativePhrase(message: string): string | null {
+    const t = message.trim()
+    const patterns: RegExp[] = [
+        /\bpor\s+parte\s+de\s+(.+?)\s*$/i,
+        /\bde\s+parte\s+de\s+(.+?)\s*$/i,
+        /\ben\s+nombre\s+de\s+(.+?)\s*$/i,
+        /\brepresentando\s+a\s+(.+?)\s*$/i,
+    ]
+    for (const re of patterns) {
+        const m = t.match(re)
+        if (m) {
+            const raw = m[1].replace(/[.,;:]+$/, '').trim()
+            if (raw.length >= 2) return raw
+        }
+    }
+    return null
+}
 
 const SERVICE_KEYWORDS: Array<{ catalog: string; keywords: string[] }> = [
     {
@@ -76,13 +107,14 @@ export function mapServiceToCatalog(raw: string): string {
 
 const buildPrompt = (message: string): string => {
     const catalogLines = MATNAR_SERVICES.map((s, i) => `${i + 1}. ${s}`).join('\n')
-    return `Eres un extractor de datos para agendar citas. Analiza el mensaje del usuario y devuelve SOLO un JSON con estos cuatro campos. Usa null si el campo NO aparece de forma clara en el mensaje. No inventes datos.
+    return `Eres un extractor de datos para agendar citas. Analiza el mensaje del usuario y devuelve SOLO un JSON con estos cinco campos. Usa null si el campo NO aparece de forma clara en el mensaje. No inventes datos.
 
 Campos:
-- name: nombre del usuario si lo menciona ("me llamo Jose" -> "Jose"). Sin titulos.
+- name: nombre de la persona o empresa si lo menciona. Ejemplos: "me llamo Jose" -> "Jose"; "por parte de Servicios Esponja" o "de parte de ACME" -> el nombre despues de esa frase. Sin titulos.
 - service: el servicio o tema que le interesa, en las palabras del usuario ("Desarrollo", "una app movil", "consultoria"). Si dice algo generico como "una consulta" o no menciona servicio, usa null.
 - date_phrase: la expresion COMPLETA de fecha que dijo el usuario, incluyendo modificadores de semana. Reordenala a la forma "[el] DIA de la semana que viene" cuando el usuario mencione "semana que viene", "proxima semana", "semana siguiente" o similar (en cualquier orden de las palabras). Ejemplos: "viernes" -> "viernes"; "el lunes" -> "el lunes"; "lunes de la semana que viene" -> "el lunes de la semana que viene"; "la semana que viene el lunes" -> "el lunes de la semana que viene"; "para la proxima semana el martes" -> "el martes de la proxima semana"; "15/01/2026" -> "15/01/2026"; "manana" -> "manana". null si no hay fecha en el mensaje.
 - time_phrase: la expresion textual de la hora tal como el usuario la dijo ("3 pm", "2:30 pm", "14:00"). null si no hay hora.
+- email: correo electronico exacto si aparece en el mensaje. Si no, null.
 
 Catalogo de servicios oficiales (para tu referencia, pero devuelve las palabras del usuario, no el item del catalogo):
 ${catalogLines}
@@ -92,7 +124,7 @@ Mensaje del usuario:
 ${message}
 """
 
-Responde SOLO con el JSON, sin comentarios ni markdown. El JSON debe tener exactamente las claves: name, service, date_phrase, time_phrase.`
+Responde SOLO con el JSON, sin comentarios ni markdown. El JSON debe tener exactamente las claves: name, service, date_phrase, time_phrase, email.`
 }
 
 /**
@@ -105,7 +137,7 @@ Responde SOLO con el JSON, sin comentarios ni markdown. El JSON debe tener exact
 export async function extractAppointmentFields(message: string): Promise<AppointmentFields> {
     const trimmed = message.trim()
     if (!trimmed) {
-        return { name: null, service: null, date: null, time: null }
+        return { name: null, service: null, date: null, time: null, email: null }
     }
 
     let parsed: RawExtraction
@@ -113,23 +145,37 @@ export async function extractAppointmentFields(message: string): Promise<Appoint
         parsed = await getLLM().completeJson<RawExtraction>(buildPrompt(trimmed), { temperature: 0 })
     } catch (error) {
         console.error('[extractor] Failed to extract fields:', error)
-        return { name: null, service: null, date: null, time: null }
+        return {
+            name: null,
+            service: null,
+            date: null,
+            time: null,
+            email: extractEmail(trimmed),
+        }
     }
 
     const tz = getAppointmentTimeZone()
     const date = parsed.date_phrase
         ? normalizeAppointmentDate(parsed.date_phrase, new Date(), tz)
         : null
-    const time = parsed.time_phrase
-        ? normalizeAppointmentTime(parsed.time_phrase)
-        : null
+    let time = parsed.time_phrase ? normalizeAppointmentTime(parsed.time_phrase) : null
+    if (!time) time = normalizeAppointmentTime(trimmed)
     const service = parsed.service ? mapServiceToCatalog(parsed.service) : null
-    const name = parsed.name ? parsed.name.trim() : null
+    let name = parsed.name ? parsed.name.trim() : null
+    if (!name) {
+        const fromPhrase = extractNameFromRepresentativePhrase(trimmed)
+        if (fromPhrase) name = fromPhrase
+    }
+
+    let email = parsed.email ? parsed.email.trim().toLowerCase() : null
+    if (email && !EMAIL_REGEX.test(email)) email = null
+    if (!email) email = extractEmail(trimmed)
 
     return {
         name: name && name.length > 0 ? name : null,
         service,
         date,
         time,
+        email,
     }
 }
