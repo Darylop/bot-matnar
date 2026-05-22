@@ -4,8 +4,55 @@ import {
     findNextAvailableSlot,
     isCalendarNotFoundError,
 } from '../services/calendar.service'
-import { formatTime12h, formatWeekdayFriendly } from '../utils/appointment-datetime'
+import {
+    formatTime12h,
+    formatWeekdayFriendly,
+    getAppointmentTimeZone,
+    isBusinessWeekday,
+    isWithinBusinessHours,
+    normalizeAppointmentDate,
+    normalizeAppointmentTime,
+} from '../utils/appointment-datetime'
 import { looksLikeAffirmative, looksLikeNegativeOnly, looksLikeSlotAcceptance } from '../utils/affirmative'
+
+const DATE_STATE_KEY = 'appointmentDate'
+const TIME_STATE_KEY = 'appointmentTime'
+
+/**
+ * Si el usuario escribe otra fecha u hora (p. ej. "prefiero a las 9am") mientras hay
+ * una oferta alternativa, interpretamos eso como cambio de propuesta y no como si/no.
+ */
+function parseProposedSlotChange(
+    body: string,
+    currentDate: string,
+    currentTime: string,
+    offered: { date: string; time: string }
+): { date: string; time: string } | null {
+    const now = new Date()
+    const tz = getAppointmentTimeZone()
+    const directDate = normalizeAppointmentDate(body, now, tz)
+    const directTime = normalizeAppointmentTime(body)
+
+    if (!directDate && !directTime) return null
+
+    let nextDate = currentDate
+    let nextTime = currentTime
+
+    if (directDate && isBusinessWeekday(directDate)) {
+        nextDate = directDate
+    }
+    if (directTime && isWithinBusinessHours(directTime)) {
+        nextTime = directTime
+    }
+
+    if (nextDate === currentDate && nextTime === currentTime) return null
+
+    if (nextDate === offered.date && nextTime === offered.time) {
+        return { date: offered.date, time: offered.time }
+    }
+
+    return { date: nextDate, time: nextTime }
+}
 
 export type SlotFieldReader = {
     get: (k: string) => unknown
@@ -34,6 +81,9 @@ const getOfferedSlot = (state: SlotFieldReader): { date: string; time: string } 
     }
     return null
 }
+
+export const hasPendingSlotOffer = (state: SlotFieldReader): boolean =>
+    getOfferedSlot(state) !== null
 
 const setOfferedSlot = async (
     state: SlotFieldReader,
@@ -84,20 +134,31 @@ export async function negotiateAppointmentSlot(
     if (body && offered) {
         if (looksLikeSlotAcceptance(body) || looksLikeAffirmative(body)) {
             await state.update({
-                appointmentDate: offered.date,
-                appointmentTime: offered.time,
+                [DATE_STATE_KEY]: offered.date,
+                [TIME_STATE_KEY]: offered.time,
                 [OFFER_DATE_KEY]: '',
                 [OFFER_TIME_KEY]: '',
                 [AWAITING_ALT_KEY]: false,
             })
             return { status: 'ok' }
         }
+
+        const proposed = parseProposedSlotChange(body, date, time, offered)
+        if (proposed) {
+            await clearSlotNegotiationState(state)
+            await state.update({
+                [DATE_STATE_KEY]: proposed.date,
+                [TIME_STATE_KEY]: proposed.time,
+            })
+            return negotiateAppointmentSlot(state, proposed.date, proposed.time, undefined)
+        }
+
         if (looksLikeNegativeOnly(body)) {
             await state.update({
                 [OFFER_DATE_KEY]: '',
                 [OFFER_TIME_KEY]: '',
                 [AWAITING_ALT_KEY]: true,
-                appointmentTime: '',
+                [TIME_STATE_KEY]: '',
             })
             return { status: 'prompt', message: '¿Que otro dia u hora te conviene?' }
         }

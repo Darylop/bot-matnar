@@ -10,12 +10,12 @@ export const MATNAR_SERVICE_ENTRIES: readonly MatnarServiceEntry[] = [
     {
         title: 'Desarrollo web a medida (React, Next.js, Node.js, TypeScript)',
         description:
-            'Creamos sitios y aplicaciones web a tu medida: corporativos, landings, paneles de administracion y productos digitales. Usamos React, Next.js, Node.js y TypeScript para que sea rapido, escalable y facil de mantener.',
+            'Creamos sitios y aplicaciones web a tu medida: corporativos, landings, paneles de administración y productos digitales. Usamos React, Next.js, Node.js y TypeScript para que sea rapido, escalable y fácil de mantener.',
     },
     {
-        title: 'Aplicaciones moviles (React Native)',
+        title: 'Aplicaciones móviles (React Native)',
         description:
-            'Desarrollamos apps para iOS y Android con React Native, compartiendo gran parte del codigo. Ideal si quieres llegar a tus usuarios en el movil con una experiencia nativa y lanzamientos mas agiles.',
+            'Desarrollamos apps para iOS y Android con React Native, compartiendo gran parte del código. Ideal si quieres llegar a tus usuarios en el movil con una experiencia nativa y lanzamientos mas agiles.',
     },
     {
         title: 'Tiendas y soluciones de e-commerce',
@@ -25,17 +25,17 @@ export const MATNAR_SERVICE_ENTRIES: readonly MatnarServiceEntry[] = [
     {
         title: 'Diseno UI/UX y experiencia de usuario',
         description:
-            'Investigamos a tus usuarios, armamos wireframes y prototipos, y disenamos interfaces claras y atractivas. El objetivo es que tu producto se entienda facil, se vea profesional y convierta mejor.',
+            'Investigamos a tus usuarios, armamos wireframes y prototipos, y disenamos interfaces claras y atractivas. El objetivo es que tu producto se entienda fácil, se vea profesional y convierta mejor.',
     },
     {
         title: 'Consultoria tecnologica y arquitectura de software',
         description:
-            'Revisamos tu stack, procesos y codigo para proponer mejoras de arquitectura, rendimiento y seguridad. Te acompanamos en decisiones tecnicas antes de invertir en un desarrollo grande.',
+            'Revisamos tu stack, procesos y código para proponer mejoras de arquitectura, rendimiento y seguridad. Te acompanamos en decisiones tecnicas antes de invertir en un desarrollo grande.',
     },
     {
         title: 'Integraciones con APIs y sistemas externos',
         description:
-            'Conectamos tu software con APIs, ERPs, CRMs, pasarelas de pago y herramientas que ya uses. Automatizamos el intercambio de datos para que no dupliques trabajo ni copies informacion a mano.',
+            'Conectamos tu software con APIs, ERPs, CRMs, pasarelas de pago y herramientas que ya uses. Automatizamos el intercambio de datos para que no dupliques trabajo ni copies información a mano.',
     },
     {
         title: 'Automatizaciones y bots (como este)',
@@ -43,7 +43,7 @@ export const MATNAR_SERVICE_ENTRIES: readonly MatnarServiceEntry[] = [
             'Automatizamos tareas repetitivas y creamos bots (WhatsApp, web, internos) que atienden consultas, agendan citas o enlazan sistemas. Como este asistente, pero adaptado a tu negocio.',
     },
     {
-        title: 'Transformacion digital para empresas',
+        title: 'Transformación digital para empresas',
         description:
             'Te acompanamos para digitalizar procesos, herramientas y canales de atencion. Definimos prioridades, implementamos soluciones y capacitamos al equipo para que el cambio se sostenga.',
     },
@@ -153,9 +153,12 @@ export function userAsksForServices(raw: string): boolean {
     return patterns.some((re) => re.test(t))
 }
 
-/** Cierre informativo sobre reuniones (sin preguntas tipo "quieres agendar?"). */
+/** Cierre informativo sobre reuniones (catalogo general, sin servicio concreto). */
 export const MEETING_INFO_FOOTER =
-    'Para mas informacion, hacemos reuniones de 30 min sobre el servicio que te interese 📅'
+    'Para mas información, realizamos reuniones de 30 min sobre el servicio que te interese 📅'
+
+/** Cierre al explicar un servicio puntual (numero del catalogo, "el 7", etc.). */
+export const SERVICE_DETAIL_APPOINTMENT_CTA = '¿Quieres agendar?'
 
 export type MainMenuChoice = 'about' | 'services' | 'appointment'
 
@@ -177,21 +180,29 @@ export function buildMainMenuReply(): string {
 export function buildAboutUsReply(): string {
     return [
         'Somos Matnar 😊',
-        'Creamos soluciones digitales a medida para negocios y emprendedores: desarrollo web, apps moviles, e-commerce, automatizaciones y transformacion digital.',
+        'Creamos soluciones digitales a medida para negocios y emprendedores: desarrollo web, apps moviles, e-commerce, automatizaciones y transformación digital.',
         MEETING_INFO_FOOTER,
         'Escribe *menu* para volver al inicio.',
     ].join('\n\n')
 }
 
 /**
- * Opcion del menu principal. Los numeros 1-3 solo aplican cuando `menuContext`
+ * Opción del menu principal. Los numeros 1-3 solo aplican cuando `menuContext`
  * es true (el usuario acaba de ver el menu), para no confundirlos con el catalogo.
  */
+const MENU_BUTTON_TO_CHOICE: Record<string, MainMenuChoice> = {
+    'sobre nosotros': 'about',
+    servicios: 'services',
+    'agendar cita': 'appointment',
+}
+
 export function parseMainMenuChoice(raw: string, menuContext: boolean): MainMenuChoice | null {
     const t = normalizeForIntent(raw)
     if (!t) return null
 
     if (menuContext) {
+        const fromButton = MENU_BUTTON_TO_CHOICE[t]
+        if (fromButton) return fromButton
         if (t === '1') return 'about'
         if (t === '2') return 'services'
         if (t === '3') return 'appointment'
@@ -206,11 +217,14 @@ export function parseMainMenuChoice(raw: string, menuContext: boolean): MainMenu
 
 export function looksLikeBackToMenu(raw: string): boolean {
     const t = normalizeForIntent(raw)
-    return /^(menu|inicio|volver|principal|opciones)$/.test(t)
+    return (
+        /^(menu|inicio|volver|principal|opciones|salir|menu principal)$/.test(t) ||
+        t.includes('menu principal')
+    )
 }
 
 export const SERVICES_ACTIONS_FOOTER =
-    'Si ya tienes cita: escribe *modificar cita* o *cancelar cita*.\nEscribe *menu* para volver al inicio.'
+    'Si ya tienes cita: *mis citas*, *modificar cita* o *cancelar cita*.\nEscribe *menu* para volver al inicio.'
 
 export function buildServicesReply(): string {
     return [
@@ -221,7 +235,7 @@ export function buildServicesReply(): string {
     ].join('\n\n')
 }
 
-/** Saludo corto sin otra intencion (hola, buenos dias, que tal). */
+/** Saludo corto sin otra intención (hola, buenos dias, que tal). */
 export function looksLikeGreeting(raw: string): boolean {
     const t = normalizeForIntent(raw)
     if (!t || t.length > 45) return false
@@ -258,7 +272,7 @@ export type FindServiceByNumberOptions = {
     /**
      * Si es true, un mensaje que es solo un numero (ej. "4") se interpreta como
      * servicio del catalogo. Debe ser false cuando el usuario acaba de ver el menu
-     * principal (1-3), para no confundir la opcion "2" con el servicio #2.
+     * principal (1-3), para no confundir la opción "2" con el servicio #2.
      */
     catalogContext?: boolean
 }

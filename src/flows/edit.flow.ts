@@ -12,7 +12,8 @@ import {
 } from '../services/calendar.service'
 import { extractAppointmentFields, extractEmail, mapServiceToCatalog } from '../services/extractor.service'
 import {
-    BUSINESS_HOURS_LABEL,
+    BUSINESS_DATE_FIELD_LABEL,
+    BUSINESS_TIME_FIELD_LABEL,
     formatTime12h,
     getAppointmentTimeZone,
     isBusinessWeekday,
@@ -22,6 +23,11 @@ import {
 } from '../utils/appointment-datetime'
 import { clearAppointmentState } from './cancel.flow'
 import { dispatchByIntent } from './dispatch-intent'
+import {
+    getDeterministicIntent,
+    looksLikeDeclineEdit,
+    looksLikeListAppointmentsRequest,
+} from './flow-guard'
 
 type StoredSnapshot = {
     eventId: string
@@ -121,8 +127,8 @@ const promptForMissing = (
     const newDate = (state.get(STATE_KEYS.date) as string) || ''
     const newTime = (state.get(STATE_KEYS.time) as string) || ''
     const missing: string[] = []
-    if (!newDate) missing.push('la fecha (lun-vie)')
-    if (!newTime) missing.push(`la hora (${BUSINESS_HOURS_LABEL})`)
+    if (!newDate) missing.push(BUSINESS_DATE_FIELD_LABEL)
+    if (!newTime) missing.push(BUSINESS_TIME_FIELD_LABEL)
 
     const cabecera = `Tu cita: ${snapshot.service} el ${snapshot.date} a las ${formatTime12h(snapshot.time)}.`
     if (missing.length === 0) {
@@ -132,7 +138,13 @@ const promptForMissing = (
 }
 
 export const editFlow = addKeyword<Provider, Database>(utils.setEvent('EDIT_FLOW'))
-    .addAction(async (ctx, { state, flowDynamic, endFlow }) => {
+    .addAction(async (ctx, { state, flowDynamic, endFlow, gotoFlow }) => {
+        const initial = (state.get('appointmentInitialMessage') as string | undefined) ?? ctx.body
+        if (initial && getDeterministicIntent(initial) === 'list_appointments') {
+            const rerouted = await dispatchByIntent({ body: initial }, state, gotoFlow)
+            if (rerouted) return
+        }
+
         let appointment
         try {
             appointment = await findUpcomingAppointmentByPhone(ctx.from)
@@ -182,8 +194,9 @@ export const editFlow = addKeyword<Provider, Database>(utils.setEvent('EDIT_FLOW
             [STATE_KEYS.email]: '',
         })
 
-        const initial = (state.get('appointmentInitialMessage') as string | undefined) ?? ctx.body
-        if (initial) await applyUserMessage(initial, state)
+        if (initial && !looksLikeListAppointmentsRequest(initial) && !looksLikeDeclineEdit(initial)) {
+            await applyUserMessage(initial, state)
+        }
 
         if (!hasNewSlot(state, snapshot)) {
             await flowDynamic(promptForMissing(state, snapshot))
@@ -195,6 +208,15 @@ export const editFlow = addKeyword<Provider, Database>(utils.setEvent('EDIT_FLOW
     .addAction({ capture: true }, async (ctx, { state, flowDynamic, fallBack, endFlow, gotoFlow }) => {
         const rerouted = await dispatchByIntent(ctx, state, gotoFlow)
         if (rerouted) return
+
+        if (looksLikeDeclineEdit(ctx.body) || looksLikeListAppointmentsRequest(ctx.body)) {
+            await clearAppointmentState(state)
+            if (looksLikeListAppointmentsRequest(ctx.body)) {
+                return dispatchByIntent(ctx, state, gotoFlow)
+            }
+            await flowDynamic('Listo, dejo tu cita como esta. Si necesitas algo mas, escribe *menu*.')
+            return endFlow()
+        }
 
         const eventId = state.get(STATE_KEYS.eventId) as string | undefined
         const originalService = state.get(STATE_KEYS.snapshotService) as string | undefined

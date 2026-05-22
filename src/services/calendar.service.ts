@@ -3,6 +3,7 @@ import path from 'path'
 import crypto from 'crypto'
 import {
     addBusinessSlotStep,
+    formatTime12h,
     getAppointmentTimeZone,
     isBusinessWeekday,
     isWithinBusinessHours,
@@ -317,11 +318,21 @@ const extractAttendeeEmail = (event: calendar_v3.Schema$Event): string | null =>
     return guest?.email ?? null
 }
 
+const mapEventToStoredAppointment = (ev: calendar_v3.Schema$Event): StoredAppointment => ({
+    eventId: ev.id!,
+    summary: ev.summary ?? '',
+    description: ev.description ?? '',
+    startIso: ev.start?.dateTime ?? ev.start?.date ?? '',
+    endIso: ev.end?.dateTime ?? ev.end?.date ?? '',
+    email: extractAttendeeEmail(ev),
+    meetLink: extractMeetLink(ev),
+})
+
 /**
- * Busca la proxima cita futura asociada a un numero de WhatsApp.
- * Se basa en el marcador "WhatsApp: <phone>" que createAppointment escribe en la descripcion.
+ * Lista todas las citas futuras del contacto (ordenadas por fecha).
+ * Se basa en el marcador "WhatsApp: <phone>" en la descripcion del evento.
  */
-export async function findUpcomingAppointmentByPhone(phone: string): Promise<StoredAppointment | null> {
+export async function listUpcomingAppointmentsByPhone(phone: string): Promise<StoredAppointment[]> {
     const calendar = getCalendarClient()
     const { timezone, calendarId } = getCalendarConfig()
 
@@ -344,20 +355,51 @@ export async function findUpcomingAppointmentByPhone(phone: string): Promise<Sto
         throw error
     }
 
-    const items = response.data.items ?? []
     const marker = `WhatsApp: ${phone}`
-    const match = items.find((ev) => (ev.description ?? '').includes(marker))
-    if (!match || !match.id) return null
+    const items = response.data.items ?? []
+    return items
+        .filter((ev) => ev.id && (ev.description ?? '').includes(marker))
+        .map((ev) => mapEventToStoredAppointment(ev))
+}
 
-    return {
-        eventId: match.id,
-        summary: match.summary ?? '',
-        description: match.description ?? '',
-        startIso: match.start?.dateTime ?? match.start?.date ?? '',
-        endIso: match.end?.dateTime ?? match.end?.date ?? '',
-        email: extractAttendeeEmail(match),
-        meetLink: extractMeetLink(match),
+/**
+ * Busca la proxima cita futura asociada a un numero de WhatsApp.
+ */
+export async function findUpcomingAppointmentByPhone(phone: string): Promise<StoredAppointment | null> {
+    const list = await listUpcomingAppointmentsByPhone(phone)
+    return list[0] ?? null
+}
+
+const APPOINTMENTS_LIST_FOOTER =
+    'Para cancelar una: *cancelar cita* o *cancelar cita 1*\nPara cancelar todas: *cancelar todas las citas*\nPara cambiar fecha u hora: *modificar cita*\nEscribe *menu* para volver al inicio.'
+
+/**
+ * Mensaje de WhatsApp con el listado numerado de citas del contacto.
+ */
+export function formatAppointmentsListMessage(appointments: StoredAppointment[]): string {
+    if (appointments.length === 0) {
+        return `No tienes citas programadas por ahora 📅\n¿Quieres agendar una? Escribe *agendar cita* o elige la opcion 3 del menu.`
     }
+
+    const header =
+        appointments.length === 1
+            ? 'Esta es tu cita pendiente 📅'
+            : `Tienes ${appointments.length} citas programadas 📅`
+
+    const lines: string[] = [header, '']
+    appointments.forEach((apt, index) => {
+        const fmt = formatStoredDateTime(apt.startIso)
+        const { reason } = parseAppointmentDescription(apt.description)
+        const service = reason || apt.summary || 'Reunion Matnar'
+        if (fmt) {
+            lines.push(`${index + 1}. ${service} — ${fmt.date} a las ${formatTime12h(fmt.time)}`)
+        } else {
+            lines.push(`${index + 1}. ${service}`)
+        }
+        if (apt.meetLink) lines.push(`   Meet: ${apt.meetLink}`)
+    })
+    lines.push('', APPOINTMENTS_LIST_FOOTER)
+    return lines.join('\n')
 }
 
 /**

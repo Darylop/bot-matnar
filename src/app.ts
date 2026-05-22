@@ -8,8 +8,29 @@ import { servicesFlow } from './flows/services.flow'
 import { appointmentFlow } from './flows/appointment.flow'
 import { cancelFlow } from './flows/cancel.flow'
 import { editFlow } from './flows/edit.flow'
+import { listAppointmentsFlow } from './flows/list-appointments.flow'
 
 const PORT = process.env.PORT ?? 3008
+
+const logProcessError = (label: string, error: unknown): void => {
+    console.error(`[bot-matnar] ${label}:`, error)
+}
+
+process.on('unhandledRejection', (reason) => {
+    logProcessError('Promesa rechazada sin capturar', reason)
+})
+
+/** Baileys reemplaza los listeners al crear el provider; volvemos a registrar el nuestro. */
+const attachFatalErrorLogging = (): void => {
+    process.on('uncaughtException', (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') {
+            console.error(
+                `[bot-matnar] El puerto ${PORT} ya esta en uso. Cierra la otra instancia o cambia PORT en .env`
+            )
+        }
+        logProcessError('Excepcion no capturada (revisa tambien baileys.log)', error)
+    })
+}
 
 const main = async () => {
     const adapterFlow = createFlow([
@@ -19,10 +40,27 @@ const main = async () => {
         appointmentFlow,
         cancelFlow,
         editFlow,
+        listAppointmentsFlow,
     ])
 
     const adapterProvider = createProvider(Provider, {
         version: [2, 3000, 1035824857],
+    })
+    attachFatalErrorLogging()
+
+    adapterProvider.on('auth_failure', (instructions: string[]) => {
+        console.error('[bot-matnar] Fallo de autenticacion WhatsApp:')
+        for (const line of instructions) console.error(`  - ${line}`)
+        console.error('  Revisa baileys.log en la raiz del proyecto.')
+    })
+
+    adapterProvider.on('require_action', (payload: { instructions?: string[] }) => {
+        console.log('[bot-matnar] Accion requerida (QR o vinculacion):')
+        for (const line of payload.instructions ?? []) console.log(`  ${line}`)
+    })
+
+    adapterProvider.on('ready', () => {
+        console.log('[bot-matnar] WhatsApp conectado correctamente.')
     })
 
     const adapterDB = new Database()
@@ -56,6 +94,10 @@ const main = async () => {
     )
 
     httpServer(+PORT)
+    console.log(`[bot-matnar] Servidor en http://localhost:${PORT} — esperando conexion WhatsApp...`)
 }
 
-main()
+main().catch((error) => {
+    logProcessError('No se pudo iniciar el bot', error)
+    process.exit(1)
+})

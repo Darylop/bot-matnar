@@ -10,7 +10,8 @@ import {
     isCalendarNotFoundError,
 } from '../services/calendar.service'
 import {
-    BUSINESS_HOURS_LABEL,
+    BUSINESS_DATE_FIELD_LABEL,
+    BUSINESS_TIME_FIELD_LABEL,
     formatTime12h,
     getAppointmentTimeZone,
     isBusinessWeekday,
@@ -26,7 +27,24 @@ import {
 } from '../services/extractor.service'
 import { clearAppointmentState } from './cancel.flow'
 import { dispatchByIntent } from './dispatch-intent'
-import { negotiateAppointmentSlot } from './appointment-slot'
+import { getDeterministicIntent } from './flow-guard'
+import { hasPendingSlotOffer, negotiateAppointmentSlot } from './appointment-slot'
+import { looksLikeAffirmative, looksLikeSlotAcceptance } from '../utils/affirmative'
+import {
+    buildAfterHoursRejectionLine,
+    buildBookingContinuationHint,
+    buildBusinessHoursReply,
+    buildEmailPrompt,
+    buildInitialAppointmentPrompt,
+    INVALID_EMAIL_FORMAT_PROMPT,
+    looksLikeEmailAttemptWithoutAt,
+    buildMissingFieldsPrompt,
+    buildPostSlotDetailsPrompt,
+    COMPLETE_APPOINTMENT_DETAILS_PROMPT,
+    seedAppointmentServiceFromLastTopic,
+    userAsksAboutAppointmentHours,
+    WEEKEND_REJECTION_MESSAGE,
+} from '../utils/appointment-messages'
 
 type FieldKey = 'name' | 'service' | 'date' | 'time' | 'email'
 
@@ -48,6 +66,26 @@ const getField = (state: { get: (k: string) => unknown }, key: FieldKey): string
     return typeof v === 'string' && v.length > 0 ? v : null
 }
 
+/** Respuestas de confirmacion de horario que no son nombres de persona. */
+const isInvalidStoredName = (raw: string | null): boolean => {
+    if (!raw) return false
+    return looksLikeSlotAcceptance(raw) || looksLikeAffirmative(raw)
+}
+
+const getEffectiveName = (state: { get: (k: string) => unknown }): string | null => {
+    const name = getField(state, 'name')
+    if (name && isInvalidStoredName(name)) return null
+    return name
+}
+
+const clearInvalidName = async (
+    state: { update: (data: Record<string, unknown>) => Promise<unknown>; get: (k: string) => unknown }
+): Promise<void> => {
+    if (isInvalidStoredName(getField(state, 'name'))) {
+        await state.update({ [FIELD_STATE_KEY.name]: '' })
+    }
+}
+
 type Rejections = {
     rejectedDate?: string
     rejectedTime?: string
@@ -60,10 +98,20 @@ const mergeRejections = (a: Rejections, b: Rejections): Rejections => ({
 
 const buildRejectionPrefix = (rej: Rejections): string => {
     const parts: string[] = []
-    if (rej.rejectedTime)
-        parts.push(`${formatTime12h(rej.rejectedTime)} esta fuera de horario (${BUSINESS_HOURS_LABEL}).`)
-    if (rej.rejectedDate) parts.push(`${rej.rejectedDate} no es lun-vie.`)
+    if (rej.rejectedTime) parts.push(buildAfterHoursRejectionLine(formatTime12h(rej.rejectedTime)))
+    if (rej.rejectedDate) parts.push(WEEKEND_REJECTION_MESSAGE)
     return parts.join(' ')
+}
+
+/** Rechazos (fin de semana / hora) van solos; no mezclar con "me faltan nombre y fecha". */
+const composeUserPrompt = (
+    state: { get: (k: string) => unknown },
+    rejections: Rejections
+): string => {
+    if (rejections.rejectedDate || rejections.rejectedTime) {
+        return buildRejectionPrefix(rejections)
+    }
+    return buildNextPromptBase(state)
 }
 
 const mergeExtraction = async (
@@ -72,8 +120,15 @@ const mergeExtraction = async (
 ): Promise<Rejections> => {
     const patch: Record<string, string> = {}
     const rejections: Rejections = {}
-    if (!getField(state, 'name') && extracted.name) patch[FIELD_STATE_KEY.name] = extracted.name
-    if (!getField(state, 'service') && extracted.service) patch[FIELD_STATE_KEY.service] = extracted.service
+    if (!getEffectiveName(state) && extracted.name && !isInvalidStoredName(extracted.name)) {
+        patch[FIELD_STATE_KEY.name] = extracted.name
+    }
+    if (extracted.service) {
+        const current = getField(state, 'service')
+        if (!current || extracted.service !== current) {
+            patch[FIELD_STATE_KEY.service] = extracted.service
+        }
+    }
     if (!getField(state, 'date') && extracted.date) {
         if (isBusinessWeekday(extracted.date)) {
             patch[FIELD_STATE_KEY.date] = extracted.date
@@ -96,14 +151,15 @@ const mergeExtraction = async (
 }
 
 const getMissing = (state: { get: (k: string) => unknown }): FieldKey[] => {
-    return REQUIRED_FIELDS.filter((k) => !getField(state, k))
+    return REQUIRED_FIELDS.filter((k) => {
+        if (k === 'name') return !getEffectiveName(state)
+        return !getField(state, k)
+    })
 }
 
 const resolveServiceForBooking = (state: { get: (k: string) => unknown }): string => {
     const explicit = getField(state, 'service')
     if (explicit) return explicit
-    const fromChat = state.get('chatLastMentionedService')
-    if (typeof fromChat === 'string' && fromChat.length > 0) return fromChat
     return DEFAULT_APPOINTMENT_SERVICE
 }
 
@@ -115,32 +171,84 @@ const getMissingNonEmail = (state: { get: (k: string) => unknown }): FieldKey[] 
 const looksLikePersonName = (raw: string): boolean => {
     const t = raw.trim()
     if (!t || t.length > 50) return false
+    if (isInvalidStoredName(t)) return false
+    if (getDeterministicIntent(t)) return false
     if (/@|\d{2,}/.test(t)) return false
+    if (/\b(cancelar|cancela|quiero|agendar|reservar|cita|reunion|servicio|chiste|menu|salir|sirve)\b/i.test(t)) {
+        return false
+    }
+    if (t.split(/\s+/).length > 4) return false
     return /^[\p{L}\s'.-]+$/u.test(t)
 }
 
 const friendlyFieldLabel: Record<FieldKey, string> = {
     name: 'tu nombre',
     service: 'el servicio (opcional)',
-    date: 'la fecha (lun-vie)',
-    time: `la hora (${BUSINESS_HOURS_LABEL})`,
+    date: BUSINESS_DATE_FIELD_LABEL,
+    time: BUSINESS_TIME_FIELD_LABEL,
     email: 'tu correo',
 }
 
-const buildInitialAppointmentPrompt = (): string =>
-    `envíame tu nombre, el servicio (opcional), la fecha (lun-vie) y la hora (${BUSINESS_HOURS_LABEL}).`
-
 const buildMissingPrompt = (missing: FieldKey[], name: string | null): string => {
-    const hi = name ? `${name}, ` : ''
-    if (missing.length === 0) return ''
-    if (missing.length === 1) return `${hi}solo me falta ${friendlyFieldLabel[missing[0]]}.`
+    const validName = name && !isInvalidStoredName(name) ? name : null
     const labels = missing.map((k) => friendlyFieldLabel[k])
-    const last = labels.pop() as string
-    return `${hi}envíame ${labels.join(', ')} y ${last}.`
+    return buildMissingFieldsPrompt(labels, validName)
 }
 
-const buildEmailPrompt = (): string =>
-    'Por ultimo, pasame tu correo para enviarte la invitacion con el link de la reunion.'
+const buildPostSlotPrompt = (state: { get: (k: string) => unknown }): string =>
+    buildPostSlotDetailsPrompt({
+        nameMissing: !getEffectiveName(state),
+        emailMissing: !getField(state, 'email'),
+    })
+
+const buildHoursReplyForState = (state: { get: (k: string) => unknown }): string => {
+    const missing = getMissingNonEmail(state)
+    return buildBusinessHoursReply(
+        buildBookingContinuationHint({
+            needsName: missing.includes('name'),
+            needsDate: missing.includes('date'),
+            needsTime: missing.includes('time'),
+            hasDateAndTime: hasDateAndTime(state),
+        })
+    )
+}
+
+const isSlotConfirmationMessage = (body: string): boolean =>
+    looksLikeSlotAcceptance(body) || looksLikeAffirmative(body)
+
+const collectFinalDetails = async (
+    state: { get: (k: string) => unknown; update: (data: Record<string, unknown>) => Promise<unknown> },
+    body: string
+): Promise<{ prompt: string } | { ready: true }> => {
+    await clearInvalidName(state)
+
+    const email = extractEmail(body)
+    if (email) {
+        await state.update({ [FIELD_STATE_KEY.email]: email })
+    }
+
+    const nameMissing = !getEffectiveName(state)
+    const emailMissing = !getField(state, 'email')
+    const onlyNeedsEmail = emailMissing && !nameMissing
+
+    if (onlyNeedsEmail && !email && (body.includes('@') || looksLikeEmailAttemptWithoutAt(body))) {
+        return { prompt: INVALID_EMAIL_FORMAT_PROMPT }
+    }
+
+    if (!email && nameMissing && looksLikePersonName(body) && body.length <= 40) {
+        await state.update({ [FIELD_STATE_KEY.name]: body.trim() })
+    }
+
+    if (getMissing(state).length === 0) {
+        return { ready: true }
+    }
+
+    if (isSlotConfirmationMessage(body)) {
+        return { prompt: buildPostSlotPrompt(state) }
+    }
+
+    return { prompt: buildPostSlotPrompt(state) }
+}
 
 type DirectNormalized = {
     date?: string
@@ -193,7 +301,8 @@ const tryBook = async (
     ctx: { from: string },
     state: { get: (k: string) => unknown; update: (data: Record<string, unknown>) => Promise<unknown> }
 ): Promise<BookResult> => {
-    const name = getField(state, 'name')!
+    await clearInvalidName(state)
+    const name = getEffectiveName(state)!
     const service = resolveServiceForBooking(state)
     const date = getField(state, 'date')!
     const time = getField(state, 'time')!
@@ -275,24 +384,38 @@ const readyToBook = (state: { get: (k: string) => unknown }): boolean => {
     return getMissing(state).length === 0
 }
 
-const composePrompt = (base: string, rejections: Rejections): string => {
-    const prefix = buildRejectionPrefix(rejections)
-    return prefix ? `${prefix} ${base}` : base
-}
-
 /**
  * Email se pide al final una vez completos nombre, fecha y hora. Si todavia faltan
  * datos basicos, no acribillamos al usuario con "y tu correo" en cada prompt.
  */
+const isEmailOnlyMessage = (body: string): boolean => {
+    const email = extractEmail(body)
+    if (!email) return false
+    const rest = body.replace(new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '').trim()
+    return rest.replace(/[.,!?¡¿\s-]/g, '').length === 0
+}
+
 const buildNextPromptBase = (state: { get: (k: string) => unknown }): string => {
+    if (hasPendingSlotOffer(state)) return ''
+
+    const nameMissing = !getEffectiveName(state)
+    const emailMissing = !getField(state, 'email')
+
+    if (hasDateAndTime(state)) {
+        if (nameMissing && emailMissing) return COMPLETE_APPOINTMENT_DETAILS_PROMPT
+        if (nameMissing) return 'Perfecto. ¿Como te llamas?'
+        if (emailMissing) return buildEmailPrompt()
+        return ''
+    }
+
     const missingNonEmail = getMissingNonEmail(state)
     if (missingNonEmail.length > 0) {
         if (!getField(state, 'name') && !getField(state, 'date') && !getField(state, 'time')) {
             return buildInitialAppointmentPrompt()
         }
-        return buildMissingPrompt(missingNonEmail, getField(state, 'name'))
+        return buildMissingPrompt(missingNonEmail, getEffectiveName(state))
     }
-    if (!getField(state, 'email')) return buildEmailPrompt()
+    if (emailMissing) return buildEmailPrompt()
     return ''
 }
 
@@ -318,17 +441,24 @@ const promptForNextStep = async (
     flowDynamic: (msg: string) => Promise<unknown>,
     rejections: Rejections = {}
 ): Promise<void> => {
-    const base = buildNextPromptBase(state)
-    if (!base) return
-    await flowDynamic(composePrompt(base, rejections))
+    const msg = composeUserPrompt(state, rejections)
+    if (!msg) return
+    await flowDynamic(msg)
 }
 
 export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('APPOINTMENT_FLOW'))
-    .addAction(async (ctx, { state, flowDynamic, endFlow }) => {
+    .addAction(async (ctx, { state, flowDynamic, endFlow, gotoFlow }) => {
         await state.update({ appointmentBookingActive: true })
+        await seedAppointmentServiceFromLastTopic(state)
         const initial = (state.get('appointmentInitialMessage') as string | undefined) ?? ctx.body
+        if (initial && getDeterministicIntent(initial)) {
+            const rerouted = await dispatchByIntent({ body: initial }, state, gotoFlow)
+            if (rerouted) return
+        }
         let initialRejections: Rejections = {}
-        if (initial && !state.get('appointmentExtracted')) {
+        const initialIsShortAck =
+            Boolean(initial) && (isSlotConfirmationMessage(initial) || looksLikeAffirmative(initial))
+        if (initial && !state.get('appointmentExtracted') && !initialIsShortAck) {
             try {
                 const extracted = await extractAppointmentFields(initial)
                 initialRejections = await mergeExtraction(state, extracted)
@@ -341,6 +471,13 @@ export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('AP
                 rejectedTime: direct.rejectedTime,
             })
             await state.update({ appointmentExtracted: true })
+        } else if (initialIsShortAck) {
+            await state.update({ appointmentExtracted: true })
+        }
+
+        if (initial && userAsksAboutAppointmentHours(initial) && !hasDateAndTime(state)) {
+            await flowDynamic(buildHoursReplyForState(state))
+            return
         }
 
         if (hasDateAndTime(state)) {
@@ -365,18 +502,41 @@ export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('AP
         if (rerouted) return
 
         const body = ctx.body.trim()
+
+        if (userAsksAboutAppointmentHours(body)) {
+            return fallBack(buildHoursReplyForState(state))
+        }
         const nonEmailMissing = getMissingNonEmail(state)
         const emailMissing = !getField(state, 'email')
-        const onlyEmailMissing = nonEmailMissing.length === 0 && emailMissing
+        const nameMissing = !getEffectiveName(state)
+        const slotConfirmed = hasDateAndTime(state) && !hasPendingSlotOffer(state)
+        const collectingAfterSlot =
+            slotConfirmed && (nameMissing || emailMissing) && nonEmailMissing.every((k) => k === 'name')
         let rejections: Rejections = {}
 
-        if (onlyEmailMissing) {
-            const email = extractEmail(body)
-            if (email) {
-                await state.update({ [FIELD_STATE_KEY.email]: email })
-            } else {
-                return fallBack('No reconoci un correo valido. Escribelo (ej: tu@correo.com).')
+        if (hasPendingSlotOffer(state) && hasDateAndTime(state)) {
+            const slot = await runSlotNegotiationIfNeeded(state, body)
+            if (slot.block && slot.message) {
+                return fallBack(slot.message)
             }
+            if (!hasPendingSlotOffer(state) && isSlotConfirmationMessage(body)) {
+                const details = await collectFinalDetails(state, body)
+                if ('prompt' in details && details.prompt) {
+                    return fallBack(details.prompt)
+                }
+            }
+        }
+
+        if (collectingAfterSlot || (nonEmailMissing.length === 0 && emailMissing)) {
+            const details = await collectFinalDetails(state, body)
+            if ('ready' in details) {
+                // sigue abajo a tryBook
+            } else {
+                return fallBack(details.prompt)
+            }
+        } else if (isSlotConfirmationMessage(body) && hasDateAndTime(state)) {
+            await clearInvalidName(state)
+            return fallBack(buildPostSlotPrompt(state))
         } else {
             const direct = tryDirectNormalize(body)
             const directEmail = extractEmail(body)
@@ -387,10 +547,17 @@ export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('AP
             if (
                 nonEmailMissing.includes('name') &&
                 looksLikePersonName(body) &&
-                looksLikeSingleField
+                looksLikeSingleField &&
+                !isSlotConfirmationMessage(body)
             ) {
                 await state.update({ [FIELD_STATE_KEY.name]: body })
-            } else if (nonEmailMissing.length === 1 && nonEmailMissing[0] === 'name' && body.length <= 60 && looksLikeSingleField) {
+            } else if (
+                nonEmailMissing.length === 1 &&
+                nonEmailMissing[0] === 'name' &&
+                body.length <= 60 &&
+                looksLikeSingleField &&
+                !isSlotConfirmationMessage(body)
+            ) {
                 await state.update({ [FIELD_STATE_KEY.name]: body })
             } else if (
                 !getField(state, 'service') &&
@@ -398,7 +565,8 @@ export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('AP
                 emailMissing &&
                 body.length <= 120 &&
                 looksLikeSingleField &&
-                !looksLikePersonName(body)
+                !looksLikePersonName(body) &&
+                !isSlotConfirmationMessage(body)
             ) {
                 await state.update({ [FIELD_STATE_KEY.service]: mapServiceToCatalog(body) })
             } else {
@@ -425,15 +593,15 @@ export const appointmentFlow = addKeyword<Provider, Database>(utils.setEvent('AP
         }
 
         if (hasDateAndTime(state)) {
-            const slot = await runSlotNegotiationIfNeeded(state, body)
+            const slotBody = isEmailOnlyMessage(body) ? undefined : body
+            const slot = await runSlotNegotiationIfNeeded(state, slotBody)
             if (slot.block && slot.message) {
                 return fallBack(slot.message)
             }
         }
 
         if (!readyToBook(state)) {
-            const base = buildNextPromptBase(state)
-            return fallBack(composePrompt(base, rejections))
+            return fallBack(composeUserPrompt(state, rejections))
         }
 
         const result = await tryBook(ctx, state)

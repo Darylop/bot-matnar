@@ -277,6 +277,18 @@ export function formatTime12h(timeHHmm: string): string {
 /** Rango horario laboral formateado para mostrar al usuario (12h). */
 export const BUSINESS_HOURS_LABEL = '9 am a 6 pm'
 
+/** Dias habiles para citas (texto para mensajes al usuario). */
+export const BUSINESS_DAYS_LABEL = 'lunes a viernes'
+
+/** Horario completo: dias + horas (fuente unica para copys del bot). */
+export const BUSINESS_SCHEDULE_LABEL = `${BUSINESS_DAYS_LABEL} de ${BUSINESS_HOURS_LABEL}`
+
+/** Etiqueta al pedir fecha; evita abreviaturas como (lun-vie). */
+export const BUSINESS_DATE_FIELD_LABEL = `la fecha (${BUSINESS_SCHEDULE_LABEL})`
+
+/** Etiqueta al pedir hora. */
+export const BUSINESS_TIME_FIELD_LABEL = `la hora (${BUSINESS_HOURS_LABEL})`
+
 /**
  * Cuando el usuario dice una hora sin am/pm explicito (p.ej. "a las 4"),
  * y la lectura literal AM cae fuera del horario laboral pero la version PM

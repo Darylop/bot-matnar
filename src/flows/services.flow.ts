@@ -12,9 +12,15 @@ import {
     MEETING_INFO_FOOTER,
     mentionsService,
     parseMainMenuChoice,
+    SERVICE_DETAIL_APPOINTMENT_CTA,
     SERVICES_ACTIONS_FOOTER,
     userAsksForServices,
 } from '../context/services.catalog'
+import {
+    APPOINTMENT_BOOKING_NUDGE,
+    buildBusinessHoursReply,
+    userAsksAboutAppointmentHours,
+} from '../utils/appointment-messages'
 import { generateChatResponse, GeminiMessage } from '../services/ai.service'
 import { mapServiceToCatalog } from '../services/extractor.service'
 import { splitWhatsappMessages } from '../utils/split-message'
@@ -41,7 +47,7 @@ const buildNumberRefReply = (index: number, service: string, description: string
     const emoji = getServiceEmoji(index)
     const heading = emoji ? `${index}. ${emoji} ${service} ✨` : `${index}. ${service} ✨`
     const body = description.trim() ? `${heading}\n\n${description.trim()}` : heading
-    return `${body}\n\n${MEETING_INFO_FOOTER}\n\n${SERVICES_ACTIONS_FOOTER}`
+    return `${body}\n\n${SERVICE_DETAIL_APPOINTMENT_CTA}`
 }
 
 const buildServicesResponse = async (
@@ -74,6 +80,9 @@ const buildServicesResponse = async (
     if (looksLikeBackToMenu(ctx.body)) {
         await state.update({ chatMainMenuActive: true, chatServicesCatalogActive: false })
         return buildMainMenuReply()
+    }
+    if (userAsksAboutAppointmentHours(ctx.body)) {
+        return buildBusinessHoursReply(APPOINTMENT_BOOKING_NUDGE)
     }
     if (menuChoice === 'about') return buildAboutUsReply()
     if (menuChoice === 'services' || fromMainMenuServices || userAsksForServices(ctx.body)) {

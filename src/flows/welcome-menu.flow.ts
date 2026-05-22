@@ -7,6 +7,7 @@ import {
     looksLikeBackToMenu,
     parseMainMenuChoice,
 } from '../context/services.catalog'
+import { seedAppointmentServiceFromLastTopic } from '../utils/appointment-messages'
 import { splitWhatsappMessages } from '../utils/split-message'
 import { dispatchByIntent } from './dispatch-intent'
 import { servicesFlow } from './services.flow'
@@ -19,9 +20,6 @@ export const welcomeMenuFlow = addKeyword<Provider, Database>(utils.setEvent('WE
         await flowDynamic(buildMainMenuReply())
     })
     .addAction({ capture: true }, async (ctx, { state, flowDynamic, gotoFlow }) => {
-        const rerouted = await dispatchByIntent(ctx, state, gotoFlow)
-        if (rerouted) return
-
         if (looksLikeBackToMenu(ctx.body)) {
             await state.update({ chatMainMenuActive: true })
             await flowDynamic(buildMainMenuReply())
@@ -49,8 +47,12 @@ export const welcomeMenuFlow = addKeyword<Provider, Database>(utils.setEvent('WE
                 appointmentExtracted: false,
                 appointmentBookingActive: true,
             })
+            await seedAppointmentServiceFromLastTopic(state)
             return gotoFlow(appointmentFlow)
         }
+
+        const rerouted = await dispatchByIntent(ctx, state, gotoFlow)
+        if (rerouted) return
 
         await flowDynamic('Elige 1, 2 o 3 del menu, o escribe *menu*.')
     })

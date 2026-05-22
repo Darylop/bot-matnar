@@ -62,6 +62,8 @@ export function looksLikeAffirmative(raw: string): boolean {
 const SLOT_ACCEPT_PHRASES = new Set([
     ...AFFIRMATIVE_PHRASES,
     'me sirve',
+    'si, me sirve',
+    'sí, me sirve',
     'si me sirve',
     'sí me sirve',
     'me sirve esa hora',
@@ -74,12 +76,16 @@ const SLOT_ACCEPT_PHRASES = new Set([
     'de acuerdo esa hora',
 ])
 
+const SLOT_ACCEPT_SUFFIX_RE =
+    /^(?:si|sí|sip|claro|dale|ok|okay|vale|perfecto|de acuerdo|esta bien|está bien)(?:\s*,\s*|\s+)(?:me\s+)?sirve(?:\s+esa\s+hora)?$/
+
 /** Aceptacion de un horario alternativo propuesto por el bot. */
 export function looksLikeSlotAcceptance(raw: string): boolean {
     if (!raw) return false
     const cleaned = cleanShortReply(raw)
     if (!cleaned || cleaned.length > 40) return false
-    return SLOT_ACCEPT_PHRASES.has(cleaned)
+    if (SLOT_ACCEPT_PHRASES.has(cleaned)) return true
+    return SLOT_ACCEPT_SUFFIX_RE.test(cleaned)
 }
 
 const NEGATIVE_PHRASES = new Set([

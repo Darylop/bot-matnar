@@ -6,6 +6,7 @@ import {
     parseMainMenuChoice,
 } from '../context/services.catalog'
 import { looksLikeAffirmative } from '../utils/affirmative'
+import { getDeterministicIntent } from './flow-guard'
 
 type StateReader = { get: (key: string) => unknown }
 
@@ -13,6 +14,9 @@ type StateReader = { get: (key: string) => unknown }
  * Clasifica con IA y aplica overrides de contexto (menu activo, "si" tras ofrecer cita, etc.).
  */
 export async function resolveIntent(text: string, state: StateReader): Promise<Intent> {
+    const deterministic = getDeterministicIntent(text)
+    if (deterministic) return deterministic
+
     let intent: Intent = 'welcome'
 
     try {

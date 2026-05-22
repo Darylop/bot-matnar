@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node ./dist/app.js",
     "lint": "eslint . --no-ignore",
-    "dev": "npm run lint && nodemon --signal SIGKILL  ./src/app.ts",
+    "dev": "npm run lint && nodemon --signal SIGKILL ./src/app.ts",
     "build": "npx rollup -c"
   },
   "keywords": [],
