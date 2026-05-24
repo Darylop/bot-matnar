@@ -8,7 +8,7 @@
     "start": "node ./dist/app.js",
     "lint": "eslint . --no-ignore",
     "dev": "npm run lint && nodemon --signal SIGKILL ./src/app.ts",
-    "build": "npx rollup -c"
+    "build": "esbuild src/app.ts --bundle --platform=node --packages=external --format=esm --outfile=dist/app.js"
   },
   "keywords": [],
   "dependencies": {
@@ -23,9 +23,8 @@
     "@types/node": "^25.0.0",
     "eslint": "^9.0.0",
     "eslint-plugin-builderbot": "latest",
+    "esbuild": "^0.25.0",
     "nodemon": "^3.1.11",
-    "rollup": "^4.10.0",
-    "rollup-plugin-typescript2": "^0.36.0",
     "tsx": "^4.7.1",
     "typescript": "^5.4.3",
     "typescript-eslint": "^8.0.0"
