@@ -10,3 +10,4 @@ node_modules
 *qr.png
 credentials/
 .env
+package-lock.json
